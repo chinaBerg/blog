@@ -12,3 +12,7 @@
 - [详解前端脚手架开发排坑全指南](./blogs/详解前端规范工具链落地实战.md) 2020-07-10
 - [图文详解vue+ts+class+注解风格开发排坑全指南](./blogs/图文详解vue+ts+class+注解风格开发排坑全指南.md) 2020-06-16
 - [5分钟上手Egg.js+nunjucks模板引擎](./blogs/5分钟上手Egg.js+nunjucks模板引擎.md) 2020-06-12
+
+### 2019
+
+- [vue插件开发、文档书写、github发布、npm包发布一波流](./blogs/vue插件开发、文档书写、github发布、npm包发布一波流.md)
