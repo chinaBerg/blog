@@ -5,6 +5,8 @@
 
 - [【vue-class-component源码解析】](./blogs/2022/vue-router-v3-01.md) 2022-01-22
 
+- [【vue-router源码解析】异步队列](./blogs/2022/vue-router-v3-02.md)
+
 - [【vue-router源码解析】项目架构](./blogs/2022/vue-router-v3-01.md)
 
 ### 2021
