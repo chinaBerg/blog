@@ -8,7 +8,9 @@
 
 > version 6.2.0
 
-[path-to-regexp](https://github.com/pillarjs/path-to-regexp#readme)主要作用是将字符串路径（例如'/user/:name'）转换成对应的正则表达式。下面是使用示例：
+[path-to-regexp](https://github.com/pillarjs/path-to-regexp#readme)主要作用是将字符串路径（例如'/user/:name'）转换成对应的正则表达式。该库在很多路由库中均有使用，周下周量达3千万+。
+
+下面是使用示例：
 
 ```js
 const { pathToRegexp, parse, compile } = require('path-to-regexp');
@@ -432,3 +434,136 @@ function arrayToRegexp(
 
 - 正则中小括号`()`表示捕获组，就是将匹配到的内容存储起来以供使用
 - `(?:)`表示非捕获组，即只进行匹配，不对匹配的结果进行存储
+
+
+### compile原理
+
+`compile`作用主要是给路径字符串填充数据，例如：
+
+```js
+const toPath = compile("/user/:id", { encode: encodeURIComponent });
+
+toPath({ id: 123 }); //=> "/user/123"
+```
+
+其实现如下：
+
+```js
+/**
+ * Compile a string to a template function for the path.
+ * 给路径字符串的参数填充数据
+ */
+export function compile<P extends object = object>(
+  str: string,
+  options?: ParseOptions & TokensToFunctionOptions
+) {
+  // 先调用parse函数解析路径字符串
+  // 再调用tokensToFunction进行字符串填充
+  return tokensToFunction<P>(parse(str, options), options);
+}
+```
+
+`tokensToFunction`的实现:
+
+```js
+/**
+ * Expose a method for transforming tokens into the path function.
+ */
+export function tokensToFunction<P extends object = object>(
+  tokens: Token[],
+  options: TokensToFunctionOptions = {}
+): PathFunction<P> {
+  const reFlags = flags(options);
+  const { encode = (x: string) => x, validate = true } = options;
+
+  // Compile all the tokens into regexps.
+  // 该方法主要作用是根据token创建正则对象
+  // 并且在用户指定要对传入数据进行校验时进行调用校验
+  const matches = tokens.map(token => {
+    if (typeof token === "object") {
+      // 创建非捕获的正则表达式
+      return new RegExp(`^(?:${token.pattern})$`, reFlags);
+    }
+  });
+
+  // 返回一个函数，在用户调用时将数据填充还原到路径字符串中
+  return (data: Record<string, any> | null | undefined) => {
+    let path = "";
+
+    /**
+     * 依次遍历所有token，
+     * 如果用户有传入相同key的数据，则进行填充
+     */
+    for (let i = 0; i < tokens.length; i++) {
+      const token = tokens[i];
+
+      if (typeof token === "string") {
+        path += token;
+        continue;
+      }
+
+      const value = data ? data[token.name] : undefined;
+      const optional = token.modifier === "?" || token.modifier === "*";
+      const repeat = token.modifier === "*" || token.modifier === "+";
+
+      // 如果传入的是数据是数组则进行平铺
+      if (Array.isArray(value)) {
+        if (!repeat) {
+          throw new TypeError(
+            `Expected "${token.name}" to not repeat, but got an array`
+          );
+        }
+
+        if (value.length === 0) {
+          if (optional) continue;
+
+          throw new TypeError(`Expected "${token.name}" to not be empty`);
+        }
+
+        for (let j = 0; j < value.length; j++) {
+          const segment = encode(value[j], token);
+
+          // 如果用户设置了校验传入的数据，则进行正则校验
+          if (validate && !(matches[i] as RegExp).test(segment)) {
+            throw new TypeError(
+              `Expected all "${token.name}" to match "${token.pattern}", but got "${segment}"`
+            );
+          }
+
+          // 将数据还原填充到url中
+          path += token.prefix + segment + token.suffix;
+        }
+
+        continue;
+      }
+
+      if (typeof value === "string" || typeof value === "number") {
+        const segment = encode(String(value), token);
+
+        if (validate && !(matches[i] as RegExp).test(segment)) {
+          throw new TypeError(
+            `Expected "${token.name}" to match "${token.pattern}", but got "${segment}"`
+          );
+        }
+
+        // 将数据还原填充到path内
+        path += token.prefix + segment + token.suffix;
+        continue;
+      }
+
+      if (optional) continue;
+
+      const typeOfMessage = repeat ? "an array" : "a string";
+      throw new TypeError(`Expected "${token.name}" to be ${typeOfMessage}`);
+    }
+
+    return path;
+  };
+}
+```
+
+如果去掉所有的校验等逻辑，核心逻辑就是：
+
+- 依次遍历所有`token`
+- 如果用户有传入相同`key`的数据，则进行字符串填充
+- 最终将填充拼接的字符串返回
