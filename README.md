@@ -32,6 +32,9 @@
 
 - [【vue-router源码解析】项目架构](./blogs/2022/vue-router-v3-01.md) 2022-01-13
 
+### 其他
+
+- [精读《深入浅出NodeJs》- Buffer篇](./blogs/2022/深入浅出NodeJs/Buffer.md)
 
 # 2021
 
