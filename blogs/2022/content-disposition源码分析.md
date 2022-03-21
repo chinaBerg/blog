@@ -1,7 +1,7 @@
 # content-disposition源码分析
 
 > version 0.5.4
-> 愣锤
+> 愣锤 2022/03/20
 
 [content-disposition](https://github.com/jshttp/content-disposition)库是在NodeJs中生成和解析Http Header中`Content-Disposition`字段的库。比如我们在实现Http文件下载的服务端逻辑时，想让浏览器访问请求时自动下载文件而不是读取展示文件，则需要设置该响应头的`Content-Disposition`字段。
 
