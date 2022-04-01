@@ -48,6 +48,7 @@
 - [精读《深入浅出NodeJs》- 玩转进程篇](./blogs/2022/深入浅出NodeJs/玩转进程.md)
 - [精读《深入浅出NodeJs》- Buffer篇](./blogs/2022/深入浅出NodeJs/Buffer.md)
 - [Node Stream模块笔记](./blogs/2022/深入浅出NodeJs/Node-Stream.md)
+- [curl使用指南](./blogs/2022/curl工具使用指南.md)
 
 # 2021
 
