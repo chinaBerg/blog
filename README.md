@@ -49,6 +49,7 @@
 - [精读《深入浅出NodeJs》- Buffer篇](./blogs/2022/深入浅出NodeJs/Buffer.md)
 - [Node Stream模块笔记](./blogs/2022/深入浅出NodeJs/Node-Stream.md)
 - [curl使用指南](./blogs/2022/curl工具使用指南.md)
+- [SQL入门教程](./blogs/2022/SQL教程.md)
 
 # 2021
 
