@@ -1,6 +1,6 @@
 # SQL入门
 
-> 愣锤 2022/04/07
+> 愣锤 2022/04/08
 
 - 数据库（Database）是按照数据结构来组织、存储和管理数据的仓库
 - 关系型数据库，是建立在关系模型基础上的数据库，借助于集合代数等数学概念和方法来处理数据库中的数据
@@ -53,7 +53,7 @@ SHOW TABLES;
 
 - 创建数据库表
 
-如果user表不存在则创建创建user表，`AUTO_INCREMENT`值自增；`PRIMARY KEY`指定主键的字段；`NOT NULL`表示在操作数据库时不允许字段为`null`，否则报错；
+如果user表不存在则创建创建user表，`AUTO_INCREMENT`表示值自增；`PRIMARY KEY`指定主键的字段；`NOT NULL`表示在操作数据库时不允许字段为`null`，否则报错；
 
 ```bash
 CREATE TABLE IF NOT EXISTS `user`(
@@ -269,4 +269,179 @@ select a.uid, a.author, a.level, b.name as levelName  from user a right join lev
 ```bash
 # 查询books表中bookname是西游开头的所有记录
 select * from books where bookname regexp '^西游';
+```
+
+### 事务
+
+- 在 MySQL 中只有使用了 Innodb 数据库引擎的数据库或表才支持事务。
+- 事务处理可以用来维护数据库的完整性，保证成批的 SQL 语句要么全部执行，要么全部不执行。
+- 事务用来管理 insert,update,delete 语句
+
+事务的主要作用是保证一组数据库操作都成功执行，不然如果有一步数据操作出错了会导致不完整性。举个例子，当你删除一个用户时，同时需要用户的文章信息、登录数据等等时，要确保删除用户时的其他删除操作也必须成功。
+
+使用使用主要是三步，`BEGIN;`开始一个事务，`ROLLBACK;`可以回滚事物，`COMMIT;`事务确认。
+
+```bash
+# 开始事务
+begin;
+
+# 一些数据库操作
+# 此时所有数据操作并未被真正写入数据库
+insert into books (bookname, type, author) values ('深入浅出Vue.js', 123, '刘博文');
+insert into books (bookname, type, author) values ('new book', 123, 'make');
+insert into books (bookname, type, author) values ('new book2', 123, 'make');
+
+# 事物确认，此时所有数据才被全部写入
+commit;
+```
+
+![image](https://note.youdao.com/yws/res/21166/653ADE7E5B2248069D5C85A60ABED259)
+
+### 索引
+
+### 导入导出
+
+- 导出某个表的数据
+
+```bash
+# 将books表中所有数据导出到./books.sql文件中
+select * from books into outfile './books.sql';
+```
+
+命令运行后你可能遇到如下错误导致无法导出：
+
+```bash
+ERROR 1290 (HY000): The MySQL server is running with the --secure-file-priv option so it cannot execute this statement
+```
+
+![image](https://note.youdao.com/yws/res/21185/F3F6AD2F9E0A4038BEACE9777A960F6C)
+
+这个错误是说数据库的`secure-file-priv`设置不允许导入导出数据。
+
+解决版本，我们先查看一下我们的数据库`secure-file-priv`配置:
+
+```bash
+# 终端运行
+show variables like '%secure%';
+```
+
+![image](https://note.youdao.com/yws/res/21181/9F270583388F47D3AE711AB7B5163C54)
+
+`secure-file-priv`值为`NULL`说明不允许导入导出，没有具体值时表示不对导入导出做限制，有具体值表示只允许在指定路径导入导出。
+
+- 导出整个数据库
+
+注意，导出的是整个数据库所有表的表结构，而不是导出全部数据。导出的表结构可以在其他地方导入直接创建表。
+
+```bash
+# 将指定数据库所有表的格式导出到express-blog.sql文件
+# 直接终端输入，不需要先mysql登录数据库
+mysqldump -u root -p 要导出的数据库名 > express-blog.sql
+```
+
+紧接着会要求输入数据库密码，输入完毕后，可以看到导出了一个`express-blog.sql`文件，其内容如下:
+
+```sql
+-- MySQL dump 10.13  Distrib 8.0.16, for macos10.14 (x86_64)
+--
+-- Host: localhost    Database: express-blog
+-- ------------------------------------------------------
+-- Server version	8.0.16
+
+/*!40101 SET @OLD_CHARACTER_SET_CLIENT=@@CHARACTER_SET_CLIENT */;
+/*!40101 SET @OLD_CHARACTER_SET_RESULTS=@@CHARACTER_SET_RESULTS */;
+/*!40101 SET @OLD_COLLATION_CONNECTION=@@COLLATION_CONNECTION */;
+ SET NAMES utf8mb4 ;
+/*!40103 SET @OLD_TIME_ZONE=@@TIME_ZONE */;
+/*!40103 SET TIME_ZONE='+00:00' */;
+/*!40014 SET @OLD_UNIQUE_CHECKS=@@UNIQUE_CHECKS, UNIQUE_CHECKS=0 */;
+/*!40014 SET @OLD_FOREIGN_KEY_CHECKS=@@FOREIGN_KEY_CHECKS, FOREIGN_KEY_CHECKS=0 */;
+/*!40101 SET @OLD_SQL_MODE=@@SQL_MODE, SQL_MODE='NO_AUTO_VALUE_ON_ZERO' */;
+/*!40111 SET @OLD_SQL_NOTES=@@SQL_NOTES, SQL_NOTES=0 */;
+
+--
+-- Table structure for table `books`
+--
+
+DROP TABLE IF EXISTS `books`;
+/*!40101 SET @saved_cs_client     = @@character_set_client */;
+ SET character_set_client = utf8mb4 ;
+CREATE TABLE `books` (
+  `id` int(10) unsigned NOT NULL AUTO_INCREMENT,
+  `bookname` varchar(100) NOT NULL,
+  `type` varchar(50) NOT NULL,
+  `author` varchar(50) NOT NULL,
+  PRIMARY KEY (`id`)
+) ENGINE=InnoDB AUTO_INCREMENT=12 DEFAULT CHARSET=utf8;
+/*!40101 SET character_set_client = @saved_cs_client */;
+
+--
+-- Dumping data for table `books`
+--
+
+LOCK TABLES `books` WRITE;
+/*!40000 ALTER TABLE `books` DISABLE KEYS */;
+INSERT INTO `books` VALUES (1,'资本论','123','make'),(2,'西游记','123','吴承恩'),(3,'三国演义','123','罗贯中'),(4,'水浒传','123','施耐庵'),(5,'红楼梦','123','曹雪芹'),(7,'深入浅出Node.js','123','朴灵'),(8,'深入浅出Vue.js','123','刘博文'),(9,'深入浅出Vue.js2','123','刘博文'),(10,'深入浅出Vue.js3','123','刘博文'),(11,'深入浅出Vue.js4','123','刘博文');
+/*!40000 ALTER TABLE `books` ENABLE KEYS */;
+UNLOCK TABLES;
+
+--
+-- Table structure for table `level`
+--
+
+DROP TABLE IF EXISTS `level`;
+/*!40101 SET @saved_cs_client     = @@character_set_client */;
+ SET character_set_client = utf8mb4 ;
+CREATE TABLE `level` (
+  `name` varchar(255) DEFAULT NULL,
+  `level` int(64) DEFAULT NULL,
+  `description` varchar(255) DEFAULT NULL
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci;
+/*!40101 SET character_set_client = @saved_cs_client */;
+
+--
+-- Dumping data for table `level`
+--
+
+LOCK TABLES `level` WRITE;
+/*!40000 ALTER TABLE `level` DISABLE KEYS */;
+INSERT INTO `level` VALUES ('青铜',0,'倔强青铜等级'),('白银',1,'白银等级'),('黄金',2,'闪耀黄金等级'),('铂金',3,'铂金等级'),('钻石',4,'璀璨钻石等级'),('大师',5,'超凡大师等级'),('王者',6,'无上王者等级'),('王者',7,'闪耀等级'),('王者',8,'闪耀等级');
+/*!40000 ALTER TABLE `level` ENABLE KEYS */;
+UNLOCK TABLES;
+
+--
+-- Table structure for table `user`
+--
+
+DROP TABLE IF EXISTS `user`;
+/*!40101 SET @saved_cs_client     = @@character_set_client */;
+ SET character_set_client = utf8mb4 ;
+CREATE TABLE `user` (
+  `uid` int(10) unsigned NOT NULL AUTO_INCREMENT,
+  `author` varchar(100) NOT NULL,
+  `level` int(10) unsigned DEFAULT NULL,
+  PRIMARY KEY (`uid`)
+) ENGINE=InnoDB AUTO_INCREMENT=4 DEFAULT CHARSET=utf8;
+/*!40101 SET character_set_client = @saved_cs_client */;
+
+--
+-- Dumping data for table `user`
+--
+
+LOCK TABLES `user` WRITE;
+/*!40000 ALTER TABLE `user` DISABLE KEYS */;
+INSERT INTO `user` VALUES (1,'make',1),(2,'berg',3),(3,'emei',11);
+/*!40000 ALTER TABLE `user` ENABLE KEYS */;
+UNLOCK TABLES;
+/*!40103 SET TIME_ZONE=@OLD_TIME_ZONE */;
+
+/*!40101 SET SQL_MODE=@OLD_SQL_MODE */;
+/*!40014 SET FOREIGN_KEY_CHECKS=@OLD_FOREIGN_KEY_CHECKS */;
+/*!40014 SET UNIQUE_CHECKS=@OLD_UNIQUE_CHECKS */;
+/*!40101 SET CHARACTER_SET_CLIENT=@OLD_CHARACTER_SET_CLIENT */;
+/*!40101 SET CHARACTER_SET_RESULTS=@OLD_CHARACTER_SET_RESULTS */;
+/*!40101 SET COLLATION_CONNECTION=@OLD_COLLATION_CONNECTION */;
+/*!40111 SET SQL_NOTES=@OLD_SQL_NOTES */;
+
+-- Dump completed on 2022-04-08 23:00:40
 ```
