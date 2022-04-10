@@ -1,6 +1,8 @@
 # SQL入门
 
-> 愣锤 2022/04/08
+> 愣锤 2022/04/10
+
+> version 8.0.16
 
 - 数据库（Database）是按照数据结构来组织、存储和管理数据的仓库
 - 关系型数据库，是建立在关系模型基础上的数据库，借助于集合代数等数学概念和方法来处理数据库中的数据
@@ -68,6 +70,14 @@ CREATE TABLE IF NOT EXISTS `user`(
 ```bash
 DROP TABLE 表名;
 ```
+
+- 查看创建的数据表结构
+
+```bash
+desc 表名;
+```
+
+![image](https://note.youdao.com/yws/res/21364/9FF8611776D343959BDE7A1C8DD1DFD1)
 
 ### 插入数据
 
@@ -141,7 +151,7 @@ SELECT * FROM books LIMIT 2 OFFSET 2;
 
 ```bash
 # LIKE语法
-SELECT field1, field2,...fieldN 
+SELECT field1, field2,...fieldN
 FROM table_name
 WHERE field1 LIKE condition1 [AND [OR]] filed2 = 'somevalue'
 ```
@@ -297,15 +307,136 @@ commit;
 
 ![image](https://note.youdao.com/yws/res/21166/653ADE7E5B2248069D5C85A60ABED259)
 
+
+### ALTER更新数据表
+
+`ALTER`的作用是修改数据表名或者字段。
+
+- 向数据表增加列
+
+```bash
+# 向user表中新增newField1列，类似为INT
+alter table user add newField1 int;
+```
+
+- 修改数据表字段的名称和类型
+
+`MODIFY`作用是修改字段类型，`CHANGE`可以同时修改名称和类型。
+
+```bash
+# 将user表的newField1字段的类型修改为varchar(64)
+alter table user modify newField1 varchar(64);
+
+# 将user表的newField1字段名称修改为new_field1，类型修改为varchar(128)
+alter table user change newField1 new_field1 varchar(128);
+```
+
+注意：`alter`修改类型时覆盖操作，不是增量覆盖，因此修改类型时要加上原先所有的：
+
+```bash
+# 举个例子，原先的uid字段如下
+`uid` bigint(20) NOT NULL AUTO_INCREMENT COMMENT '用户ID',
+
+# 在使用alter修改类型时，
+# 哪怕仅仅改一个数据类型为int，也需要把后面的NOT NULL等类型携带上
+alter table user modify uid int NOT NULL AUTO_INCREMENT COMMENT '用户ID'
+```
+
+- `DROP`移除字段
+
+```bash
+# 移除user表的new_field1字段
+alter table user drop new_field1;
+```
+
+- 设置/删除字段的默认值
+
+`alter`操作时如果没有指定默认值，则默认值是`NULL`，可以通过下面的例子删除/设置字段的默认值:
+
+```bash
+# 设置user表的new_field字段的默认值为100
+# 注意，alter是用了两次
+alter table user alter new_field set default 100;
+
+# 移除user表的new_field字段的默认值
+alter table user alter new_field drop default;
+```
+
+- 修改数据表的名称
+
+```bash
+# 我们先创建一个数据表
+create table new_table(uid int);
+
+# 修改new_table数据表的名称为new_table2
+alter table new_table rename to new_table2;
+```
+
+![image](https://note.youdao.com/yws/res/21313/95641B27DC014252ACD5936C463CB7ED)
+
+
 ### 索引
 
-### 导入导出
+索引分为`主键索引`、`普通索引`、`唯一索引`、`全文索引`，查看数据表的索引情况的命令是`show index from 数据表名`，下图展示了我的user表的索引情况：
+
+![image](https://note.youdao.com/yws/res/21320/CB389C7D40AF4248B41651F01DC547EB)
+
+- 主键索引
+
+主键索引是一种特殊的唯一索引，不允许有NULL值。一般在创建表的时候指定主键索引，一个表只能有一个主键。
+
+```bash
+# 创建demo_table表，
+# 通过PRIMARY KEY指定为主键
+# 通过unique指定为唯一索引
+# 通过index可以指定为普通索引
+create table demo_table(
+  id int not null primary key,
+  username varchar(64) unique
+) engine=innodb;
+```
+
+![image](https://note.youdao.com/yws/res/21338/9F09B705041B488787B69BA37EF92747)
+
+- 唯一索引
+
+唯一索引对应的列值必须唯一，但可以为NULL，如果是组合索引，则列值的组合必须唯一。
+
+可以通过`alter table 表名 add unique (列名);`添加唯一索引。`alter table 表名 add unique (列1, 列2);`创建唯一组合索引。
+
+- 普通索引
+
+普通索引是基本的索引，没有限制。创建普通索引的方式是`alter table 表名 add index 索引名称 (列名);`，创建普通组合索引的方式是`alter table 表名 add index 索引名称 (列1, 列2);`
+
+- 全文索引
+
+```bash
+# 给demo_table2先增加一列text_field1
+alter table demo_table2 add text_field1 text;
+
+# demo_table2表的text_field1字段添加全文索引
+alter table demo_table2 add fulltext(text_field1);
+```
+
+- 删除索引
+
+索引一经创建便不可修改，如果要修改则需要删除重建。
+
+```bash
+drop index 索引名称 on 表名;
+```
+
+注意：索引是一种数据结构，索引可以提升检索速度，但是会额外占用磁盘工具，降低写的速度。因此，不要过度索引。
+
+[参考文章：MySQL索引优化看这篇文章就够了！作者：良月柒](https://zhuanlan.zhihu.com/p/61687047)
+
+### 导出
 
 - 导出某个表的数据
 
 ```bash
 # 将books表中所有数据导出到./books.sql文件中
-select * from books into outfile './books.sql';
+select * from books into outfile '/tmp/books.sql';
 ```
 
 命令运行后你可能遇到如下错误导致无法导出：
@@ -316,9 +447,7 @@ ERROR 1290 (HY000): The MySQL server is running with the --secure-file-priv opti
 
 ![image](https://note.youdao.com/yws/res/21185/F3F6AD2F9E0A4038BEACE9777A960F6C)
 
-这个错误是说数据库的`secure-file-priv`设置不允许导入导出数据。
-
-解决版本，我们先查看一下我们的数据库`secure-file-priv`配置:
+这个错误是说数据库的`secure-file-priv`设置不允许导入导出数据。我们先查看一下我们的数据库`secure-file-priv`配置情况:
 
 ```bash
 # 终端运行
@@ -329,9 +458,26 @@ show variables like '%secure%';
 
 `secure-file-priv`值为`NULL`说明不允许导入导出，没有具体值时表示不对导入导出做限制，有具体值表示只允许在指定路径导入导出。
 
+解决办法大家可以参考[这篇文章](https://zhuanlan.zhihu.com/p/476381922)
+
+问题解决后，再次运行导出数据的命令，可以看到在`/tmp`目录下已经生成了`books.sql`文件，文件内容如下:
+
+```bash
+1	资本论	123	make
+2	西游记	123	吴承恩
+3	三国演义	123	罗贯中
+4	水浒传	123	施耐庵
+5	红楼梦	123	曹雪芹
+7	深入浅出Node.js	123	朴灵
+8	深入浅出Vue.js	123	刘博文
+9	深入浅出Vue.js2	123	刘博文
+10	深入浅出Vue.js3	123	刘博文
+11	深入浅出Vue.js4	123	刘博文
+```
+
 - 导出整个数据库
 
-注意，导出的是整个数据库所有表的表结构，而不是导出全部数据。导出的表结构可以在其他地方导入直接创建表。
+注意，导出的是整个数据库所有表的表和数据。导出的表结构可以在其他地方导入直接创建表和数据。
 
 ```bash
 # 将指定数据库所有表的格式导出到express-blog.sql文件
@@ -444,4 +590,28 @@ UNLOCK TABLES;
 /*!40111 SET SQL_NOTES=@OLD_SQL_NOTES */;
 
 -- Dump completed on 2022-04-08 23:00:40
+```
+
+从文件内容可以看出，实际上数据库导出的是一系列创建数据表和插入数据的命令。
+
+- 导出指定的表结构
+
+```bash
+mysqldump -u root -p 数据名 数据表名 > ./xx.sql
+```
+
+### 导入
+
+- 将导出的数据表数据导入到数据表
+
+```bash
+# 将'/tmp/books.sql'中的数据导入到books表中
+LOAD DATA INFILE '/tmp/books.sql' INTO TABLE books;
+```
+
+- 将导出的数据库（或数据表）导入
+
+```bash
+# 根据导出./books.sql文件在express-blog数据库中创建表和表的数据
+mysql -u root -p express-blog < ./books.sql
 ```
