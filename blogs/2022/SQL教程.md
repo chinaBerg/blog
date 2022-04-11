@@ -1,6 +1,6 @@
 # SQL入门
 
-> 愣锤 2022/04/10
+> 愣锤 2022/04/11
 
 > version 8.0.16
 
@@ -79,6 +79,26 @@ desc 表名;
 
 ![image](https://note.youdao.com/yws/res/21364/9FF8611776D343959BDE7A1C8DD1DFD1)
 
+### 数据类型
+
+`MySQL` 支持所有标准 `SQL` 数值数据类型，像`日期时间`、`字符串`、`数值`等。
+
+类型 | 说明 | 范围
+---|---|---|
+CHAR | 定长字符串 | `0-255`字节
+VARCHAR | 变长字符串 | `0-65535`字节
+TINYTEXT | 短文本字符串 | `0-255`字节
+TEXT | 长文本字符串 | `0-65535`字节
+TINYINT | 小整数值 | `(-128，127)`
+INT | 大整数值 | `(-2 147 483 648，2 147 483 647)`
+DATE | 日期值 | `1000-01-01/9999-12-31`
+DATETIME | 日前时间值 | `1000-01-01 00:00:00/9999-12-31 23:59:59`
+
+
+需要注意的是`char(n)` 和 `varchar(n)` 括号中的 `n` 代表字符的个数，不是字节数。
+
+其他数据类型可以参考[文档](https://www.runoob.com/mysql/mysql-data-types.html)
+
 ### 插入数据
 
 - 往表中插入数据
@@ -151,7 +171,7 @@ SELECT * FROM books LIMIT 2 OFFSET 2;
 
 ```bash
 # LIKE语法
-SELECT field1, field2,...fieldN
+SELECT field1, field2,...fieldN 
 FROM table_name
 WHERE field1 LIKE condition1 [AND [OR]] filed2 = 'somevalue'
 ```
