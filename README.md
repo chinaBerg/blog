@@ -44,6 +44,7 @@
 
 ### 其他
 
+- [精读《深入浅出NodeJs》- 内存管理篇](./blogs/2022/深入浅出NodeJs/内存管理.md)
 - [精读《深入浅出NodeJs》- Cluster篇](./blogs/2022/深入浅出NodeJs/Cluster.md)
 - [精读《深入浅出NodeJs》- 玩转进程篇](./blogs/2022/深入浅出NodeJs/玩转进程.md)
 - [精读《深入浅出NodeJs》- Buffer篇](./blogs/2022/深入浅出NodeJs/Buffer.md)
