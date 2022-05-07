@@ -1,7 +1,7 @@
 # express源码分析
 
+
 > version 4.17.3
-> 愣锤
 
 [express.js](https://www.expressjs.com.cn/)是一款基于 Node.js 平台，快速、开放、极简的 Web 开发框架。
 
@@ -19,9 +19,7 @@ app.listen(3000, () => {
 });
 ```
 
-# 源码分析
-
-### 基本构成
+### 接口组成
 
 通过源码根目录下的`index.js`暴露的内容得知，`express`的入口文件在`./lib/express`中，`lib/express`的基本结构如下：
 
@@ -345,9 +343,9 @@ const app2 = new Express();
 app2.listen(3200);
 ```
 
-### 添加中间件原理
+### app.use()添加中间件原理
 
-express很核心的一个功能模型就是中间件，express本身更多的是实现了一个中间件架构模型，很多功能都是通过添加中间件来扩展的。使用中间件的方式也很简单，就是通过`app.use()`进行添加：
+`express`很核心的一个功能模型就是中间件，`express`本身更多的是实现了一个中间件架构模型，很多功能都是通过添加中间件来扩展的。使用中间件的方式也很简单，就是通过`app.use()`进行添加：
 
 ```js
 const express = require('express');
@@ -370,7 +368,11 @@ app.listen(3000, () => {
 });
 ```
 
-`app.use`所依赖的中间件模型并没有在express初始化时创建，而是在使用`app.use`时才`lazy`式的初始化。下面直接看`app.use`在`application.js`中的源码实现：
+`app.use`所依赖的中间件模型并没有在`express`初始化时创建，而是在使用`app.use`时才`lazy`式的初始化。在分析`app.use`的源码实现之前，我们先看一张相关的代码结构组织图：
+
+![image](https://note.youdao.com/yws/res/22347/48A50F8BD760492C9B057E895DC9FF13)
+
+上图梳理`app.use`所依赖的各个模块的依赖图，从图中可以看到`app.use`是在`application.js`文件中定义的。下面直接看`app.use`的源码实现：
 
 ```js
 /**
@@ -416,8 +418,9 @@ app.use = function use(fn) {
 
   fns.forEach(function (fn) {
     /**
-     * fn是中间件，而不是express应用
+     * 处理fn是中间件而不是express应用的情况
      * 注意的是express是支持主子应用的
+     * app实例是包含handle方法和set方法的，这里利用了鸭式辨型的思想
      */
     if (!fn || !fn.handle || !fn.set) {
       // 将中间件添加到路由router的中管理
@@ -449,13 +452,18 @@ app.use = function use(fn) {
 };
 ```
 
-- `app.use`中首先根据参数情况，获取中间件以及中间件生效的path路径
+- `app.use`中首先根据参数情况，获取中间件以及中间件生效的`path`路径
 - 利用`this.lazyrouter();`进行初始化路由对象`router`
 - 迭代传入的中间件，判断是中间件还是`express`应用
     - 是中间件，则交由`router.use`新增中间件
-    - 是`express`应用，则指明父应用和挂载的路径等，同时触发一个子应用挂载的事件
+    - 是`express`应用，则指明父应用和挂载的路径等，同时触发一个子应用挂载的事件。判断是`express`子应用的逻辑是只有该`fn`参数包含`handle`和`set`属性则认为是`express`应用，利用的鸭式辨型的思想。
 
-可以看到`app.use`本身是没有处理中间件逻辑的，只是处理了参数和区分中间件与子应用，最终中间件的处理还是代理到`Router`类了。`Router`类的也是通过手动调用`this.lazyrouter`进行`lazy`式的创建的。`lazyrouter`方法的实现也是在`application.js`中，我们看下源码实现：
+可以看到`app.use`本身是没有处理中间件逻辑的，只是处理了参数和区分中间件与子应用，最终中间件的处理还是代理到`Router`类了。这里逻辑如下图所示：
+
+![image](https://note.youdao.com/yws/res/22539/B0BCF281FC7E4AB3B97213F923226134)
+
+
+`router`对象也是通过手动调用`this.lazyrouter`进行`lazy`式的创建的。`lazyrouter`方法的实现也是在`application.js`中，我们看下源码实现：
 
 ```js
 /**
@@ -629,6 +637,7 @@ proto.use = function use(fn) {
       end: false
     }, fn);
 
+    // layer.route用于标记该layer（中间件）是否是路由处理程序
     layer.route = undefined;
 
     // 将包裹后的中间件添加到中间件栈中（数据结构本质是队列）
@@ -673,8 +682,189 @@ function Layer(path, options, fn) {
 
 `Layer`类的主要目的就是对中间件进行一次包裹，包裹成统一的数据格式，并且对`path`的动态参数部分利用`path-to-regexp`解析成键值对集合，方便后续使用。有关`path-to-regexp`的使用和源码解析可以翻阅我的这篇博文 “[面试官：Vue-Router是如何解析URL路由参数的？小明：卒......](https://juejin.cn/post/7077156554721460255)”。
 
-到这里基本上就完成了添加中间件的一整条链路，再梳理一下整条链路图：
 
-![image](https://note.youdao.com/yws/res/22347/48A50F8BD760492C9B057E895DC9FF13)
+### app\[method\]()添加中间件原理
+
+除了`app.use()`放使用中间件外，我们还可以通过`app[method]()`的方式添加路由中间件，例如下面的使用方式:
+
+```js
+const app = express();
+
+// 针对指定path的路由中间件
+app.get('/api/v1/user/:id', function() {});
+app.post('/api/v1/user', function() {});
+```
+
+`app[method]()`的原理究竟是怎样实现的，它又和`app.use()`的实现方式有什么区别呢？接下来我们首先找到`app[method]()`的源码位置，在`application.js`中有这样一段代码：
+
+```js
+var methods = require('methods');
+
+/**
+ * Delegate `.VERB(...)` calls to `router.VERB(...)`.
+ * 将app[method]调用委托到router.route上调用
+ */
+methods.forEach(function(method){
+  app[method] = function(path){
+    // 如果是app.get调用且参数只有一个，则作为获取配置方法使用
+    if (method === 'get' && arguments.length === 1) {
+      // app.get(setting)
+      return this.set(path);
+    }
+
+    this.lazyrouter();
+
+    // 调用router.route方法获取route对象
+    var route = this._router.route(path);
+    // 将app[method]方法调用委托到route[method]
+    route[method].apply(route, slice.call(arguments, 1));
+    return this;
+  };
+});
+```
+
+这就意味着`application.js`文件加载时通过一个循环给`app`对象上挂载了`get、post、put、delete`等所有的请求方法，[methods](https://github.com/jshttp/methods)库的原理就是通过`http.METHODS`获取所有的请求方法名称的，同时兼容了`Node.js0.10`版本，有兴趣的可以翻着看看。
+
+在`app[method]`的方法内部，主要做了如下几件事情：
+
+- 如果是`get`方法且参数只有一个，则把`app.get`当作获取配置参数的方法使用
+- 通过调用`this.lazyrouter();`确保`router`对象被加载
+- 调用`router`对象的`route`方法创建一个`route`对象用于当前app[method]行为的委托
+- 最后`app[method]`实际调用的是`route[method]`，完成了委托行为
+
+![image](https://note.youdao.com/yws/res/22463/B7429DC9CC734B59A2A40D45177D0068)
+
+接下来我们看`this._router.route(path);`是如何通过调用`router`的`route`方法来创建`route`对象的：
+
+```js
+var Route = require('./route');
+
+/**
+ * 根据指定的path创建一个新的Route对象
+ * 每个route包含一个独立的中间件存储栈
+ *
+ * @param {String} path
+ * @return {Route}
+ * @public
+ */
+proto.route = function route(path) {
+  // 初始化一个route对象
+  var route = new Route(path);
+
+  /**
+   * 初始化一个Layer对象包裹中间件
+   * 该Layer绑定的中间件是route.dispatch
+   */
+  var layer = new Layer(path, {
+    sensitive: this.caseSensitive,
+    strict: this.strict,
+    end: true
+  }, route.dispatch.bind(route));
+
+  // 在layer上添加route属性指向route对象
+  layer.route = route;
+
+  // 将layer添加到router的栈中
+  this.stack.push(layer);
+
+  // 返回的是route
+  return route;
+};
+```
+
+这里可以看到也是首先是实例化`Route`对象，然后实例化`Layer`对象并把`route`对象的`dispatch`方法作为`layer`绑定的中间件，并在得到的`layer`对象对添加`route`属性指向`route`对象，接着后将`layer`对象添加到`router`的栈中，最后返回`route`对象。逻辑图如下：
+
+![image](https://note.youdao.com/yws/res/22514/8FFDD18152A34D5CBB357E45CB3EB3FB)
+
+但是这里有两点要特被注意：
+
+- 第一点是`app[method]`的过程创建了`layer`并添加到了`router`的栈中，`app.use`也创建了`layer`并添加到了`router`的栈中。这样意味着不管是什么类型的中间件都会创建`layer`并添加到`router`栈中
+
+- 第二点是`layer`对象上挂载的`rotue`属性是有值的，指向的就是`route`对象，而`app.use()`过程中创建的`layer`对象`route`属性是`undefined`，这就在`router`栈中区别开了是`app.use`添加的`layer`还是`app[method]`添加的`layer`
+
+- 第三点是创建`layer`对象时把`route`对象的`dispatch`方法绑定为了`layer`的中间件函数，这里了先粗略提一下原因，`app[method]`借助`route[method]`将中间件添加到`route`独立的栈中，`route`对象通过`dispatch`执行所有的中间件。
+
+
+接下来我们看Route类是什么，它做了那些事情？Route类的源码实现均在`lib/router/route.js`中：
+
+```js
+/**
+ * 根据指定的path初始化Route
+ *
+ * @param {String} path
+ * @public
+ */
+function Route(path) {
+  this.path = path;
+  this.stack = [];
+
+  debug('new %o', path)
+
+  // route handlers for various http methods
+  this.methods = {};
+}
+```
+
+可以看到`Route`类其实就是维护了一个独立的`stack`栈，用于存放属于该`route`的所有中间件。
+
+但是通过上述我们知道，`Route`类上是定义了`get、post`等一系列方法的，这部分是如何实现的呢？在该文件的最后有这样一段源码：
+
+```js
+var methods = require('methods');
+
+/**
+ * 给Route类定义所有的请求方法
+ * 例如：route.get、route.post等
+ */
+methods.forEach(function(method){
+  Route.prototype[method] = function(){
+    var handles = flatten(slice.call(arguments));
+
+    // 迭代app[method](path, [...middleware])中所有的中间件添加到route的栈中
+    for (var i = 0; i < handles.length; i++) {
+      var handle = handles[i];
+
+      // 省略部分参数校验代码
+
+      /**
+       * app[method]的调用本质是委托的route[method]
+       * 注意：app[method](path, [...middlewares])中所有的中间件都是对该path生效的
+       * 所以此处的Layer的path是'/'
+       */
+      var layer = Layer('/', {}, handle);
+      layer.method = method;
+
+      this.methods[method] = true;
+      // 将中间件包裹成layer添加到route的栈中
+      this.stack.push(layer);
+    }
+
+    // 返回this支持链式调用
+    return this;
+  };
+});
+```
+
+这里也是一个循环往`Route`原型上挂载了所有的方法，在方法的实现中遍历了所有的传入参数（注意参数都是中间件），然后对每一个中间件调`Layer`进行包裹添加到`route`自己独立的栈中。
+
+因此我们可以梳理出`app[method]`添加中间件的流程图如下所示：
+
+![image](https://note.youdao.com/yws/res/22520/4ED5AF180F3341C39F48239BBF81BE40)
+
+### express中间件总结
+
+- 中间件栈模型总结
+
+通过上述中间件的添加逻辑我们可以知道，不管是路由中间件（`app[method]`得到的`layer<route>`）还是非路由中间件（`app.use`得到的`layer(middleware)`），都是会使用`Layer`类包裹并添加到`router`对象（`app._router`指向的`Router`实例）的栈（`stack`属性）中，只不过区别在于路由中间件的处理程序是交由`route`对象管理的，因此中间件栈的模型如下图所示：
+
+![image](https://note.youdao.com/yws/res/22555/51F33EEE78194BE9945E4DE4F3F418CF)
+
+- router和route的区别
+
+`router`对象是在实例化`express`应用时创建一个，在一个是唯一的，如果创建子应用则在子应用内也会创建一个`router`对象，在每个应用内添加的中间件都会存入隶属于当前应用的`router`实例的`stack`栈中。
+
+`route`对象是在创建路由中间件时，根据当前路由`path`实例化的，它也有一个独立的`stack`栈存储当前路由`path`对应的多个中间件。但是创建路由中间件时会首先在`router`对象的栈中添加一个`layer`，只不过该`layer`的中间件运行后实际是调用对应`route`对象维护的所有中间件。
+
+`route`对象在`express`实例内可以存在多个，个数由路由中间件创面的次数决定。
 
 ### 消费中间件原理
