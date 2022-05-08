@@ -1,7 +1,7 @@
 # express源码分析
 
-
 > version 4.17.3
+> 愣锤
 
 [express.js](https://www.expressjs.com.cn/)是一款基于 Node.js 平台，快速、开放、极简的 Web 开发框架。
 
@@ -867,4 +867,568 @@ methods.forEach(function(method){
 
 `route`对象在`express`实例内可以存在多个，个数由路由中间件创面的次数决定。
 
-### 消费中间件原理
+### 中间件调用原理
+
+众所周知`express`中间件执行逻辑其实就是当接收到请求时依次执行所有匹配的中间件。但是具体的执行逻辑还是有些复杂的，要处理的情况很多，下面先放出来梳理的逻辑图，有了整体的概念之后再理解源码会更顺畅一些：
+
+![image](https://note.youdao.com/yws/res/22583/E187A54F23B446CD8D0E055E7FF7C11F)
+![image](https://note.youdao.com/yws/res/22585/564E1E2D7BA84242A1C3DF8AEE3E49A2)
+
+在`app.listen`中的实现我们得知，`express`应用在接收到请求之后触发的是`app`函数调用，而app函数内部又是调用的`app.handle`，代码如下:
+
+```js
+var app = function(req, res, next) {
+  app.handle(req, res, next);
+};
+  
+app.listen = function listen() {
+  // // 此处的this就是app函数
+  var server = http.createServer(this);
+  return server.listen.apply(server, arguments);
+};
+```
+
+下面我们看`application.js`中`app.handle`的处理逻辑:
+
+```js
+/**
+ * 将req和res分发给应用，进行管道式的处理
+ *
+ * 如果没有calllback提供，那么默认使用finalhandler作为错误处理程序，
+ * 并根据中间件栈中出现的错误进行response响应
+ * @private
+ */
+app.handle = function handle(req, res, callback) {
+  var router = this._router;
+
+  /**
+   * final处理程序
+   * 利用finalhandler处理final的情况
+   */
+  var done = callback || finalhandler(req, res, {
+    env: this.get('env'),
+    onerror: logerror.bind(this)
+  });
+
+  /**
+   * 处理空路由情况，路由没有创建则直接给出报错
+   * EG：没有使用任何中间件或者路由，则直接响应一个404的Cannot GET的HTML内容
+   */
+  if (!router) {
+    debug('no routes defined on app');
+    done();
+    return;
+  }
+
+  // 将请求交由router系统处理
+  router.handle(req, res, done);
+};
+```
+
+这里只是做的执行中间件的前置操作：
+
+- 自定义默认的错误处理程序，因为需要在中间件执行错误或者没有任何匹配的中间件时响应默认的`404`、`500`等
+- 如果此时还没有路由对象的实例，说明没有注册中间件，则无法进行处理，直接调用`done`响应`404`
+- 最后将中间件调用执行的逻辑委托给`router`对象执行
+
+想了解[finalhandler](https://github.com/pillarjs/finalhandler#readme)的用法源码分析的可以查看我的这篇文章[《详解《finalhandler》源码中NodeJs服务错误响应原理》](https://juejin.cn/post/7077872017256480781)
+
+有一点必须要提一下有利于后续内容的理解，`finalhandler`是根据响应码、错误状态码等值进行不同的响应内容，**但是在`finalhandler`之前如果已经有响应了，则`finalhandler`不会做任何处理。**
+
+接下来，我们看`router.handle`做了什么事情，下面代码省略部分的参数边界情况的判断，只看核心的中间件部分：
+
+```js
+proto.handle = function handle(req, res, out) {
+  var self = this;
+  var idx = 0;
+
+  // middleware and routes
+  var stack = self.stack;
+
+  /**
+   * restore利用闭包缓存req上baseUrl、next、params的原始值
+   * restore返回的done作用执行后作用就是就是恢复原始值，并调用out，即开始调用下个中间件
+   */
+  var done = restore(out, req, 'baseUrl', 'next', 'params');
+  
+  // 在req上挂载调用下一个中间件的引用
+  req.next = next;
+
+  next();
+  
+  function next() {
+    // ... 先省略next实现
+  }
+}
+```
+
+首先可以看到主体逻辑就是获取存放所有中间件`layer`的栈，然后调用`next`开始执行中间件。下面我们看`next`内部做了什么事情，下面代码也省略了部分参数的处理情况，只关心核心的中间件部分:
+
+```js
+function next(err) {
+    var layerError = err === 'route'
+      ? null
+      : err;
+
+    // 如果错误是'router'则直接done响应404
+    if (layerError === 'router') {
+      setImmediate(done, null)
+      return
+    }
+
+    /**
+     * 迭代到最后一个中间件了，此时直接done
+     * 注意：done内部执行的是finalhandler进行兜底的404返回，
+     * 那如果在此前面的中间件已经调用过res.end怎么办？
+     * 其实不用担心，因为finalhandler源码中已经判断如果已有响应请求发出则不再继续404响应
+     */
+    if (idx >= stack.length) {
+      setImmediate(done, layerError);
+      return;
+    }
+
+    // 获取请求的pathname
+    var path = getPathname(req);
+
+    // 无效的请求路径时直接done
+    if (path == null) {
+      return done(layerError);
+    }
+
+    var layer; // 当前包裹中间件的layer
+    var match; // 当前中间件是否和请求路径匹配
+    var route; // 是否是路由中间件，指向路由中间件的引用
+
+    // 依次迭代栈中的layer<middleware>
+    while (match !== true && idx < stack.length) {
+      layer = stack[idx++];
+      // 判断当前中间件是否和path匹配
+      match = matchLayer(layer, path);
+      route = layer.route;
+
+      // match不是布尔类型时，说明matchLayer解析出错了
+      if (typeof match !== 'boolean') {
+        /**
+         * 如果之前的中间件已经有错误产生了，则依旧使用之前的错误，否则使用matchLayer的错误
+         * 此举保证将第一个出错的layer产生的错误传递到最后返回
+         */
+        layerError = layerError || match;
+        // 其实这里直接continue就可以了
+      }
+
+      // 当前path和layer（中间件）不匹配，则跳过当前layer
+      if (match !== true) {
+        continue;
+      }
+
+      /**
+       * 如果是非路由中间件则直接跳出while循环开始后续的调用逻辑，
+       * 因为非路由中间件不需要检查方法类型
+       * 下文都是针对路由中间件的方法类型是否匹配的判断
+       */
+      if (!route) {
+        continue;
+      }
+
+      /**
+       * 如果存在错误，则跳过当前中间件
+       * 因为一旦产生错误，后续的中间件都不需要执行了，而是一直把错误往后传递，
+       * 这样就要求错误处理中间件必须在最后一个中间件
+       */
+      if (layerError) {
+        // routes do not match with a pending error
+        match = false;
+        continue;
+      }
+
+      /**
+       * 下面一小段逻辑主要是处理当前路由中间件是否能匹配上实际的请求方法，
+       * 如果无法匹配则跳到下一个中间件
+       * 例如，req.method是get，但是只定义了app.post的中间件，那么是无法匹配的
+       */
+      var method = req.method;
+      var has_method = route._handles_method(method);
+
+      // build up automatic options response
+      if (!has_method && method === 'OPTIONS') {
+        appendMethods(options, route._options());
+      }
+
+      // don't even bother matching route
+      if (!has_method && method !== 'HEAD') {
+        match = false;
+        continue;
+      }
+    }
+
+    /**
+     * 整个while下来之后match不是true，说明没有任何匹配的layer，
+     * 没有任何layer与path能匹配，则直接结束本次请求
+     */
+    if (match !== true) {
+      return done(layerError);
+    }
+
+    // this should be done for the layer
+    self.process_params(layer, paramcalled, req, res, function (err) {
+      /**
+       * 如果产生错误了，则直接next往后跑，并将错误传递下去
+       */
+      if (err) {
+        return next(layerError || err);
+      }
+
+      /**
+       * 如果是路由中间件，则直接调用路由中间件
+       * 这里直接调用就可以的原因是：
+       *  - 路由中间件只是桥接，其真正的中间件在route对象的stack中
+       *  - 这里layer.handle_request调用中间件也只不过是触发的route.dispatch()
+       *  - 调用route.dispatch()后才是依次执行route.stack中的中间件
+       */
+      if (route) {
+        return layer.handle_request(req, res, next);
+      }
+
+      // 校验参数后再调用中间件
+      trim_prefix(layer, layerError, layerPath, path);
+    });
+}
+```
+
+`next()`的逻辑是中间件执行最核心的实现，整体逻辑如下：
+
+- 首先判断中间件执行是否存在错误，如果存在错误且错误为`router`，则直接`done`响应`404`，停止后续的中间件执行。注意初次`next`调用的错误默认不存在
+
+- 如果已经迭代完栈中所有的中间件，则直接`done`响应，响应的内容由中间件执行的错误决定，如果已经有中间件响应了，`done`本身不会做任何处理，这个在上面已经提到了
+
+- 如果请求路径不存在，也直接调用`done`进行错误响应
+
+- 紧接着利用`while`循环开始迭代中间件
+    - 判断中间件是否和当前请求路径匹配，如果不匹配则继续迭代下一个中间件
+    - 如果是非路由中间件则直接跳出`while`循环开始后续的调用逻辑，因为非路由中间件不需要检查方法类型,下文都是针对路由中间件的方法类型是否匹配的判断
+    - 如果存在错误，则跳过当前中间件。因为一旦产生错误，后续的中间件都不需要执行了，而是一直把错误往后传递，这样就要求错误处理中间件必须在最后一个中间件
+
+- 如果整个`while`下来之后没有匹配到中间件，则直接`done`响应错误处理
+
+- 如果是路由中间件，则直接调用路由中间件。
+- 如果是非路由中间件，则先调用`trim_prefix`进行参数校验
+   - 路径校验不通过直接`done`响应错误
+    - 校验通过，根据是否已有错误产生决定进行普通中间件调用还是错误中间件调用
+
+下面看中间件调用的逻辑吧：
+
+```js
+function trim_prefix(layer, layerError, layerPath, path) {
+  if (layerPath.length !== 0) {
+    // ...省略路径参数校验不通过直接done的部分
+  }
+
+  /**
+   * 判断有没有错误存在
+   * - 有错误则调用handle_error方法处理
+   * - 没有错误则调用handle_request方法处理
+   */
+  if (layerError) {
+    layer.handle_error(layerError, req, res, next);
+  } else {
+    layer.handle_request(req, res, next);
+  }
+}
+```
+
+这部分可以看到针对非路由中间件的处理就是判断是否已存在错误，存在的化调用`handle_error`处理，不存在的话调用`handle_request`处理。下面我们看`handle_error`内部做的什么：
+
+```js
+/**
+ * 处理layer包裹的错误处理中间件调用
+ */
+Layer.prototype.handle_error = function handle_error(error, req, res, next) {
+  var fn = this.handle;
+
+  /**
+   * 如果传入的中间件处理程序的形参个数不是4，说明不是标准的错误处理中间件格式
+   * 此时则把它作为普通中间件处理，直接调用next(error)将错误传递下去
+   */
+  if (fn.length !== 4) {
+    return next(error);
+  }
+
+  try {
+    // 调用错误处理中间件
+    fn(error, req, res, next);
+  } catch (err) {
+    // 如果错误处理中间件调用出错了，则将错误继续往后传递
+    // 直到触发最后的done的error响应
+    next(err);
+  }
+};
+```
+
+这里的做法是如果有错误，但是该中间件却不是错误处理中间件，则直接`next(error)`将错误继续传递下去，是错误处理中间件则调用错粗处理中间件。然后`next`调用的控制权则移交给中间件内部控制，如果中间件执行出错，比如主动抛出错误的形式，则利用`catch`捕获后用`next`传递下去。
+
+补充：`express`有普通中间件和错误处理中间件，两者参数格式不一样
+- 普通中间件形参个数为`3`， `function middleware(req, res, next) {}`
+- 错误处理中间件形参个数为`4`， `function errorMiddleware(err, req, res, next) {}`
+
+`handle_request`的处理方式也类似，代码如下所示，就不过多讲解了：
+
+```js
+/**
+ * 处理layer包裹的中间件调用
+ */
+Layer.prototype.handle_request = function handle(req, res, next) {
+  var fn = this.handle;
+
+  /**
+   * 如果用户的中间件参数个数大于3，说明不是标准的中间件程序
+   * 则直接next()忽略，进入到下一个中间件的处理中
+   */
+  if (fn.length > 3) {
+    return next();
+  }
+
+  try {
+    /**
+     * 执行当前中间件，
+     * 然后在中间件内部由中间件控制next调用跳到下一步
+     */
+    fn(req, res, next);
+  } catch (err) {
+    // 如果执行中间件的过程中出错了，调用next(err)将错误传递下去
+    // 比如中间件会在错误的时候throw Error出来
+    next(err);
+  }
+};
+```
+
+至此，一个中间件调用流程就结束了，但是有个很重要的细节大家可能注意到了，就是路由中间件（`route`对象）其实只是一个路由中间件集合的调用桥梁，路由中间件`layer.handle`绑定的中间件只是`route.dispatch`方法，真正的路由中间件执行其实是`route.dispatch`逻辑。
+
+下面我们来看看`route.dispatch`到底做的什么事情：
+
+```js
+/**
+ * 将req和res分发给route执行
+ * @private
+ */
+Route.prototype.dispatch = function dispatch(req, res, done) {
+  var idx = 0;
+  var stack = this.stack;
+  // 不存在路由中间件，则直接next到上层的router.stack中的下一个中间件
+  if (stack.length === 0) {
+    return done();
+  }
+
+  var method = req.method.toLowerCase();
+  if (method === 'head' && !this.methods['head']) {
+    method = 'get';
+  }
+
+  req.route = this;
+
+  next();
+
+  function next(err) {
+    // signal to exit route
+    if (err && err === 'route') {
+      return done();
+    }
+
+    // signal to exit router
+    if (err && err === 'router') {
+      return done(err)
+    }
+
+    // 如果已经迭代完毕，则next到上层的router.stack中的下一个中间件
+    var layer = stack[idx++];
+    if (!layer) {
+      return done(err);
+    }
+
+    // 如果请求类型不匹配，则执行下一个路由中间件
+    if (layer.method && layer.method !== method) {
+      return next(err);
+    }
+
+    // 根据有无错误进行不同的处理
+    if (err) {
+      layer.handle_error(err, req, res, next);
+    } else {
+      layer.handle_request(req, res, next);
+    }
+  }
+};
+```
+
+`route.dispatch`的逻辑主要如下：
+
+- 如果`route.stack`中不存在路由中间件，则直接next到上层的router.stack中的下一个中间件
+- 迭代`route.stack`中的所有路由中间件
+    - 存在错误为`route`，直接`next()`到上层`router.stack`中的下一个中间件
+    - 存在错误为`router`，直接`next(err)`到上层`router.stack`中的下一个中间件
+    - 如果已经迭代完毕，则`next(err)`到上层的`router.stack`中的下一个中间件
+    - 如果请求类型与当前中间件不匹配，则执行下一个路由中间件
+    - 根据有无错误进行不同的处理
+
+至此一个完成的`express`中间件执行的完整闭环原理就讲完了。下面我们将抽离一个最最基本的`express`中间件执行逻辑，实现最基本的功能模型。
+
+### 简易Express实现
+
+实现一个简化版的Express，支持`app.use()`中间件模型，代码如下：
+
+```js
+const http = require('http');
+const finalhandler = require('finalhandler');
+
+class Express {
+  use(path, handler) {
+    if (!arguments.length) {
+      throw Error('miss arguments');
+    }
+    if (arguments.length === 1) {
+      handler = path;
+      path = '/';
+    }
+    if (!this.router) {
+      this.router = new Router();
+    }
+    this.router.use(path, handler);
+  }
+
+  listen() {
+    const server = http.createServer(this._handle.bind(this));
+    return server.listen.apply(server, arguments);
+  }
+
+  _handle(req, res) {
+    const done = finalhandler(req, res);
+    if (!this.router) {
+      done();
+      return;
+    }
+    this.router.handle(req, res, done);
+  }
+}
+
+class Router {
+  constructor() {
+    this.stacks = [];
+  }
+
+  use(path, handler) {
+    const layer = new Layer(path, handler)
+    this.stacks.push(layer);
+  }
+
+  handle(req, res, done) {
+    let index = 0;
+    const stacks = this.stacks;
+    const self = this;
+
+    next();
+
+    function next(error) {
+      // 迭代完所有中间件后执行done逻辑
+      if (index >= stacks.length) {
+        done(error);
+        return;
+      }
+
+      let layer;
+      let isMatch;
+
+      while(!isMatch && index < stacks.length) {
+        layer = stacks[index++];
+        isMatch = self.matchMiddleware(req.url, layer.path);
+      }
+
+      // 迭代完发现没有任何匹配的中间件则直接done
+      if (!isMatch) {
+        done(error);
+        return;
+      }
+
+      // 调用中间件处理函数
+      if (error) {
+        layer.handleError(error, layer.handle, req, res, next);
+      } else {
+        layer.handleRequest(layer.handle, req, res, next);
+      }
+    };
+  }
+
+  // 最基本的中间件是否匹配的逻辑
+  matchMiddleware(url, path) {
+    return url.slice(0, path.length) === path;
+  }
+}
+
+class Layer {
+  constructor(path, fn, ops) {
+    this.path = path;
+    this.handle = fn;
+    this.ops = ops || {};
+  }
+
+  // 调用错误处理中间件
+  handleError(error, fn, req, res, next) {
+    // 如果不是错误处理中间件则跳过
+    if (fn.length !== 4) {
+      next();
+      return;
+    }
+    try {
+      fn(error, req, res, next);
+    } catch (error) {
+      next(error);
+    }
+  }
+
+  // 调用请求处理中间件
+  handleRequest(fn, req, res, next) {
+    // 如果不是普通中间件则跳过
+    if (fn.length !== 3) {
+      next();
+      return;
+    }
+    try {
+      fn(req, res, next);
+    } catch (error) {
+      next(error);
+    }
+  }
+}
+```
+
+有了上面的实例，我们可以运行一个`demo`实例查看一下效果验证中间件的基本使用：
+
+```js
+const app = new Express();
+
+app.use('/', (req, res, next) => {
+  req.reqTime = Date.now().toString();
+  next();
+});
+
+app.use('/a', (req, res, next) => {
+  res.end(req.reqTime);
+  next();
+});
+
+app.use('/', (req, res, next) => {
+  req.reqTime = Date.now().toString();
+  next();
+});
+
+app.use('/b', (req, res, next) => {
+  throw Error('/b error');
+});
+
+app.use('/', (error, req, res, next) => {
+  res.writeHead(error.status || 500);
+  res.end('server error');
+});
+
+app.listen(9669, () => {
+  console.log('express is running at port 9669');
+});
+```
