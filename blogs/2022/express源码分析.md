@@ -1,7 +1,7 @@
 # express源码分析
 
+
 > version 4.17.3
-> 愣锤
 
 [express.js](https://www.expressjs.com.cn/)是一款基于 Node.js 平台，快速、开放、极简的 Web 开发框架。
 
@@ -1432,3 +1432,383 @@ app.listen(9669, () => {
   console.log('express is running at port 9669');
 });
 ```
+
+# Express部分重要API实现
+
+在req和res对象的扩展上，express提供了很多实用的方法。代码将对部分实用api的实现进行详细的分析。
+
+### res.status()实现
+
+`res.status()`方法主要用于设置http响应对象的响应状态码。
+
+```js
+/**
+ * 设置http的响应码
+ *
+ * @param {Number} code
+ * @return {ServerResponse}
+ * @public
+ */
+res.status = function status(code) {
+  // this就是res对象
+  this.statusCode = code;
+  // 返回res支持链式调用
+  return this;
+};
+```
+
+`res.status()`方法定义在`response.js`中，实现比较简单，就是直接给`http`响应对象`response`设置`statusCode`。但是要注意的是为什么此处的`this`指代的是响应对象呢？
+
+我们从`express`的`createApplication`实现中得知，只是在初始化的时候给`app`函数对象上挂载了`response.js`导出的对象上的内容，那这里`this`也不应该指向`res`对象，而是应该指向`app`对象呀。所以，为什么我们可以使用`res`对象上使用`status()`方法呢?
+
+原因在于初始化中间件的时候给res对象做了扩展功能，我们回顾下express内置的init中间件的核心逻辑：
+
+```js
+function expressInit(req, res, next){
+    // ...
+
+    // req增加res引用
+    req.res = res;
+    // res增加req引用
+    res.req = req;
+    req.next = next;
+
+    /**
+     * 扩展req和res对象，支持定义在request.js和response.js中的所有功能，
+     * 做法是：
+     *  - 设置req的原型对象为app.requset
+     *  - 设置res的原型对象为app.response
+     * 需要注意的是：虽然修改了req和res的原型对象，但是req和res并未丢失原来的原型对象，
+     * 原因是在app.request和app.response的实现中是基于正确的原型对象创建的：
+     * - var req = Object.create(http.IncomingMessage.prototype)
+     * - var res = Object.create(http.ServerResponse.prototype)
+     */
+    setPrototypeOf(req, app.request)
+    setPrototypeOf(res, app.response)
+
+    // ...
+  };
+```
+
+从这里可以看到我们在默认中间件执行的时候给`req`和`res`对象进行了功能扩展，将`request.js`和`response.js`对象上的所有方法扩展到了对应的`req`和`res`对象。
+
+
+### res.set()和res.get()实现
+
+`res.set()`用于设置响应对象的响应头的字段，比如设置`Content-Type`等等，而`res.get()`则是从响应头获取相关的字段值。先看下`res.set()`的具体实现如下:
+
+```js
+/**
+ * 设置header字段
+ * Examples:
+ *    res.set('Foo', ['bar', 'baz']);
+ *    res.set('Accept', 'application/json');
+ *    res.set({ Accept: 'text/plain', 'X-API-Key': 'tobi' });
+ * Aliased as `res.header()`.
+ * @param {String|Object} field
+ * @param {String|Array} val
+ * @return {ServerResponse} for chaining
+ * @public
+ */
+res.set =
+res.header = function header(field, val) {
+  if (arguments.length === 2) {
+    var value = Array.isArray(val)
+      ? val.map(String)
+      : String(val);
+
+    // 如果是content-type字段，则特殊处理
+    if (field.toLowerCase() === 'content-type') {
+      // content-type不允许是数组
+      if (Array.isArray(value)) {
+        throw new TypeError('Content-Type cannot be set to an Array');
+      }
+
+      // 如果content-type中没有指定charset编码，则添加charset编码
+      if (!charsetRegExp.test(value)) {
+        var charset = mime.charsets.lookup(value.split(';')[0]);
+        if (charset) value += '; charset=' + charset.toLowerCase();
+      }
+    }
+
+    // 调用http server的response对象的setHeader方法更新header字段
+    this.setHeader(field, value);
+  } else {
+    for (var key in field) {
+      this.set(key, field[key]);
+    }
+  }
+  return this;
+};
+```
+
+`res.set()`的核心实现就是根据`key/value`，调用`node`原生语法`http`的`response`对象的`setHeader`方法设置请求头字段。唯一注意点是对`Content-Type`进行了特殊处理：如果`Content-Type`没有设置`charset`字符集，则利用`mime`库获取对应的字符集后添加上。
+
+`res.get()`获取指定的响应头字段值的方法就比较简单了，直接利用`http`响应对象的`getHeader`方法获取:
+
+```js
+/**
+ * 获取响应头指定字段的值
+ *
+ * @param {String} field
+ * @return {String}
+ * @public
+ */
+res.get = function(field){
+  return this.getHeader(field);
+};
+```
+
+### res.send()实现
+
+`res.send()`是一个很重要的api，主要用于发送响应数据，例如`res.status(200).send('Hello world!')`先设置响应状态码为`200`然后响应数据为`Hello world`。下面我们看其内部是如何实现数据响应的：
+
+```js
+/**
+ * 发送http响应
+ *
+ * Examples:
+ *     res.send(Buffer.from('wahoo'));
+ *     res.send({ some: 'json' });
+ *     res.send('<p>some html</p>');
+ * @param {string|number|boolean|object|Buffer} body
+ * @public
+ */
+res.send = function send(body) {
+  var chunk = body;
+  var encoding;
+  var req = this.req;
+  var type;
+
+  // settings
+  var app = this.app;
+ 
+  /**
+   * 处理参数，兼容res.send()方法两个参数的旧格式写法
+   * 使用旧格式写法时会给出使用新语法的提示
+   */
+  if (arguments.length === 2) {
+    // res.send(body, status) backwards compat
+    if (typeof arguments[0] !== 'number' && typeof arguments[1] === 'number') {
+      deprecate('res.send(body, status): Use res.status(status).send(body) instead');
+      this.statusCode = arguments[1];
+    } else {
+      deprecate('res.send(status, body): Use res.status(status).send(body) instead');
+      this.statusCode = arguments[0];
+      chunk = arguments[1];
+    }
+  }
+  
+  // disambiguate res.send(status) and res.send(status, num)
+  if (typeof chunk === 'number' && arguments.length === 1) {
+    // 如果没有设置Content-Type，res.send(status)则默认使用text/plain
+    if (!this.get('Content-Type')) {
+      this.type('txt');
+    }
+
+    // 对res.send(status)的调用给出新语法提示
+    deprecate('res.send(status): Use res.sendStatus(status) instead');
+    this.statusCode = chunk;
+    // status对应的message
+    chunk = statuses[chunk]
+  }
+  
+  // ...省略
+}
+```
+
+这里可以看到首先是根据send的参数格式和类型，做了旧语法的兼容，比如旧的语法`res.send(status)`、`res.send(status, body)`、`res.send(body, status)`。
+
+处理完参数之后，紧接着就该对响应内容进一步处理了，代码如下所示：
+
+```js
+// 根据res.send()参数的类型做不同的处理
+switch (typeof chunk) {
+  case 'string':
+    // 对应send内容为文本且没有设置Content-Type时默认使用text/html
+    if (!this.get('Content-Type')) {
+      this.type('html');
+    }
+    break;
+  case 'boolean':
+  case 'number':
+  case 'object':
+    if (chunk === null) {
+      chunk = '';
+    } else if (Buffer.isBuffer(chunk)) {
+      // 如果是buffer数据且没有设置Content-Type，则默认使用application/octet-stream
+      if (!this.get('Content-Type')) {
+        this.type('bin');
+      }
+    } else {
+      // 如果是布尔、数值、或者对象（非null非二进制流），则交由json方法处理
+      // json方法处理完之后最后还是再次调用this.send以字符串的方式处理
+      return this.json(chunk);
+    }
+    break;
+}
+```
+
+这里根据send的参数数据进行不同的处理：
+
+- 如果是字符串且没有设置`Content-Type`则默认设置为`text/html`
+- 如果是null，则响应的数据为空字符串
+- 如果是Buffer数据且没有主动设置`Content-Type`则默认设置为`application/octet-stream`
+- 其他类型都交由`this.json()`序列化转成字符串之后再次调用`this.send()`进行处理。
+
+接下来继续往后面看，如果是字符串，或者经由`this.json()`序列化成字符串之后是如何处理的：
+
+```js
+/**
+ * 响应的数据是字符串时，指定字符编码为utf8
+ * 且对已设置的Content-Type进行容错处理，确保有charset编码
+ */
+if (typeof chunk === 'string') {
+  encoding = 'utf8';
+  type = this.get('Content-Type');
+
+  // reflect this in content-type
+  if (typeof type === 'string') {
+    this.set('Content-Type', setCharset(type, 'utf-8'));
+  }
+}
+```
+
+通过前面逻辑得知代码能走到这里，首先可以确定的是已经设置好了`Content-Type`，这时候就是拿到设置好的`Content-Type`数据再次进行容错处理，调用`setCharset`确保`Content-Type`设置了`charset`编码格式。
+
+我们知道`res.send()`是自动帮我们计算了`Content-Length`的，因此接下来的实现逻辑就是计算`Content-Length`了：
+
+```js
+/**
+ * etag的生成函数
+ * - express的初始化工作时，调用了app.set('etag')
+ * - 所以etagFn的生成函数时默认存在的，详细内容可以再翻看初始化时的app.set('etag')部分
+ */
+var etagFn = app.get('etag fn')
+/**
+ * 是否要生成ETag响应头
+ * - 如果响应头中不包含ETag字段且上面的etagFn存在的话，则应该生成ETag
+ * - 默认etagFn存在
+ */
+var generateETag = !this.get('ETag') && typeof etagFn === 'function'
+
+// 生成Content-Length数据
+var len
+if (chunk !== undefined) {
+  if (Buffer.isBuffer(chunk)) {
+    // 如果是buffer数据，则直接获取buffer长度作为Content-Length
+    len = chunk.length
+  } else if (!generateETag && chunk.length < 1000) {
+    // just calculate length when no ETag + small chunk
+    len = Buffer.byteLength(chunk, encoding)
+  } else {
+    // 将字符串转换成buffer数据，再计算Content-Length
+    chunk = Buffer.from(chunk, encoding)
+    encoding = undefined;
+    len = chunk.length
+  }
+
+  // 设置Content-Length值
+  this.set('Content-Length', len);
+}
+```
+
+这里先不看`ETag`的部分，先看len计算逻辑：
+
+- 如果`chunk`是`Buffer`类型数据，则直接使用`chunk.length`获取`buffer`长度
+- 如果是小字符串，且也不需要转换成`buffer`以及生成`ETag`则直接通过`Buffer.byteLength`获取字符串的字节长度
+- 如果是大字符串则通过`Buffer.from`转换成`buffer`数据再获取长度
+
+这里有个注意点是，对于小于`1000`字节的字符串数据，没有转换成`buffer`进行传输，因为不仅要考虑到传输的宽度和速率问题，还要考虑收到数据后的编解码的消耗，要做一个权衡考虑。
+
+通过上面的逻辑，`generateETag`变量用于判断当前响应是否要生成`ETag`响应头，判断逻辑是如果响应头没有保护`ETag`字段且`app`设置中存在`ETag`的创建函数，则值为`true`表示需要生成`ETag`。接下来我们看是如何生成`ETag`的:
+
+```js
+// 如果需要生成ETag，则创建ETag并添加到响应头中
+var etag;
+if (generateETag && len !== undefined) {
+  if ((etag = etagFn(chunk, encoding))) {
+    this.set('ETag', etag);
+  }
+}
+```
+
+这里是调用`etagFn`函数来创建`ETag`，`etagFn`来自于`app`的设置，一开始应用初始化时默认添加了`etagFn`函数，该函数背后创建`ETag`的逻辑是调用[etag](https://github.com/jshttp/etag#readme)库实现的，这里不再继续展开。继续往后看：
+
+```js
+// 缓存尚未过期，则直接304不返回响应体
+if (req.fresh) this.statusCode = 304;
+
+/**
+ * 响应码为204和304时移除内容相关的响应头``
+ * - 204表示没有内容
+ * - 304表示服务器资源没有变化，无需再次传输资源
+ */
+if (204 === this.statusCode || 304 === this.statusCode) {
+  this.removeHeader('Content-Type');
+  this.removeHeader('Content-Length');
+  this.removeHeader('Transfer-Encoding');
+  chunk = '';
+}
+```
+
+这里通过`req.fresh`判断当前缓存数据是否未过期，如果未过期则设置响应状态码为`304`，然后针对`204`状态码（没有响应内容）和`304`状态码（资源未变化不需要重复传输）则直接移除响应的`Content-Type`等字段，并把响应内容设置为空。`req.fresh`的逻辑放在解析请求对象的时候讲解。
+
+```js
+if (req.method === 'HEAD') {
+ /**
+  * 处理完请求头相关设置后，
+  * 如果是HEAD请求则直接end()，不响应任何实体，只包含了响应头
+  */
+  this.end();
+} else {
+  // 响应数据
+  this.end(chunk, encoding);
+}
+
+return this;
+```
+
+代码到这里，`res.send()`就结束了，最后支持了`HEAD`类型的请求，对于`HEAD`请求只返回响应头数据，不返回响应实体数据。否则的话则直接调用`http response`对象的`end()`方法响应数据对象。
+
+**划重点！划重点！！划重点！！！**
+
+我们最后总结一下`res.send()`主要做了哪些事情，也就是一个`web`框架对响应数据的封装要做哪些事情：
+
+- 根据响应的数据类型指定不同的`Content-Type`
+- 计算好响应对象的`Content-Length`
+- 支持`ETag`缓存是否过期，防止不必要的数据传输
+- 对于`204`和`304`响应不做实体数据的响应
+- 要支持`HEAD`请求
+
+### 
+
+### res.attachment()附件下载原理
+
+如果在`http`响应中，需要接收端对响应资源进行附件下载并保存到本地的话，需要设置响应头的`Content-Disposition`字段，这块不清楚的话可以[查阅资料](https://developer.mozilla.org/zh-CN/docs/Web/HTTP/Headers/Content-Disposition)。在`express`中则可以通过`res.attachment()`快速的实现该功能。接下来我们看其内部实现：
+
+```js
+var contentDisposition = require('content-disposition');
+
+/**
+ * 指示接收端将响应资源以附件形式下载并保存到本地
+ * @param {String} filename
+ * @return {ServerResponse}
+ * @public
+ */
+res.attachment = function attachment(filename) {
+  // 根据文件类型设置Content-Type
+  if (filename) {
+    this.type(extname(filename));
+  }
+
+  // 利用contentDisposition库生成响应头的Content-Disposition字段值
+  // 从而支持附件下载
+  this.set('Content-Disposition', contentDisposition(filename));
+
+  return this;
+};
+```
+
+可以看到内部就是通过`content-disposition`库实现的。那么为什么不直接自己拼接字符串呢？因为要考虑到大量的字符编码的问题。对`content-disposition`库源码实现有兴趣的话，可以查阅我的这篇博文[《详解Content-Disposition源码中Node附件下载服务原理》](https://juejin.cn/post/7077134813068525582)。
+
