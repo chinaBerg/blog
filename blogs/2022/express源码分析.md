@@ -1,7 +1,7 @@
 # express源码分析
 
-
 > version 4.17.3
+> 愣锤 2022/05/20
 
 [express.js](https://www.expressjs.com.cn/)是一款基于 Node.js 平台，快速、开放、极简的 Web 开发框架。
 
@@ -11,7 +11,7 @@ const Express = require('express');
 const app = new Express();
 
 app.get('/', (req, res) => {
-  res.send('Hello Express!')
+  res.send('Hello Express!');
 });
 
 app.listen(3000, () => {
@@ -1433,7 +1433,7 @@ app.listen(9669, () => {
 });
 ```
 
-# Express部分重要API实现
+# response相关API实现
 
 在req和res对象的扩展上，express提供了很多实用的方法。代码将对部分实用api的实现进行详细的分析。
 
@@ -1461,7 +1461,7 @@ res.status = function status(code) {
 
 我们从`express`的`createApplication`实现中得知，只是在初始化的时候给`app`函数对象上挂载了`response.js`导出的对象上的内容，那这里`this`也不应该指向`res`对象，而是应该指向`app`对象呀。所以，为什么我们可以使用`res`对象上使用`status()`方法呢?
 
-原因在于初始化中间件的时候给res对象做了扩展功能，我们回顾下express内置的init中间件的核心逻辑：
+原因在于初始化中间件的时候给res对象做了扩展功能，我们回顾下`express`内置的`init`中间件的核心逻辑：
 
 ```js
 function expressInit(req, res, next){
@@ -1781,7 +1781,382 @@ return this;
 - 对于`204`和`304`响应不做实体数据的响应
 - 要支持`HEAD`请求
 
-### 
+### res.sendFile()响应文件原理
+
+`res.sendFile()`方法作用主要用于根据指定的文件路径响应给接收端资源文件。下面我们看是如何实现静态文件托管服务的：
+
+```js
+var send = require('send');
+
+/**
+ * 根据给定的path响应指定的资源文件
+ * @public
+ */
+res.sendFile = function sendFile(path, options, callback) {
+  var done = callback;
+  var req = this.req;
+  var res = this;
+  var next = req.next;
+  var opts = options || {};
+  
+  // 省略部分参数处理和类型校验...
+  
+  // 编码路径
+  var pathname = encodeURI(path);
+  // 创建文件的可读流
+  var file = send(req, pathname, opts);
+  
+  // 利用sendfile函数响应资源文件
+  sendfile(res, file, opts, function (err) {
+    if (done) return done(err);
+    if (err && err.code === 'EISDIR') return next();
+
+    // next() all but write errors
+    if (err && err.code !== 'ECONNABORTED' && err.syscall !== 'write') {
+      next(err);
+    }
+  });
+}
+```
+
+首先我们要了解一下`send`库，该库主要作用就是读取指定路径得到文件流，但是我们可以指定各种资源的处理逻辑和各个生命周期钩子的处理逻辑，非常灵活。想了解send库的使用和原理实现可以阅读我的这篇文章《[详解《send》源码中NodeJs静态文件托管服务实现原理](https://juejin.cn/post/7076093974938648612)》。
+
+利用`send`库读取指定的文件得到文件流后，我们看下是如何处理流的，也就是这里的`sendfile`函数逻辑：
+
+```js
+/**
+ * pipe的方式发送文件流
+ */
+function sendfile(res, file, options, callback) {
+  var done = false;
+  var streaming;
+  
+  // ...省略部分钩子函数，后面介绍
+  
+  file.on('directory', ondirectory);
+  file.on('end', onend);
+  file.on('error', onerror);
+  file.on('file', onfile);
+  file.on('stream', onstream);
+  // res响应结束（完成、关闭、出错）之后，调用onfinish
+  // 注意响应结束或者流读取出错之后，文件流会在send库内部被销毁，不需要手动销毁
+  onFinished(res, onfinish);
+  
+  // 如果传递了响应头参数，则在流读取完成后更新响应头字段
+  if (options.headers) {
+    // set headers on successful transfer
+    file.on('headers', function headers(res) {
+      var obj = options.headers;
+      var keys = Object.keys(obj);
+
+      for (var i = 0; i < keys.length; i++) {
+        var k = keys[i];
+        res.setHeader(k, obj[k]);
+      }
+    });
+  }
+
+  // pipe方式将文件流响应给接收端
+  file.pipe(res);
+}
+```
+
+这里的主要逻辑是拿到调用`send`得到实例之后，监听一系列事件，最后将读取的流以`pipe`的形式响应给接收端。这些事件如下：
+
+- `directory`事件表示读取的路径是一个文件夹
+- `end`事件表示流读取结束了
+- `error`事件表示流读取出错了
+- `file`事件表示读取的是一个文件
+- `stream`事件是在通过fs模块创建了可读流之后触发
+- `headers`事件是在确定了路径能映射到资源之后触发，可以在此阶段添加响应头字段
+
+接下来看各个事件到底做了什么事情？
+
+```js
+// 读取的资源是文件夹时的钩子
+function ondirectory() {
+  if (done) return;
+  done = true;
+
+  // 创建一个目标是文件夹的错误，e is dir
+  var err = new Error('EISDIR, read');
+  err.code = 'EISDIR';
+  callback(err);
+}
+  
+// 读取文件流出错的钩子
+function onerror(err) {
+  if (done) return;
+  done = true;
+  // 流出错时直接调用callback并传递错误
+  callback(err);
+}
+
+// 读取文件流结束的钩子
+function onend() {
+  if (done) return;
+  done = true;
+  // 读取结束，调用callback
+  callback();
+}
+
+// 读取的资源是文件的钩子
+function onfile() {
+  streaming = false;
+}
+  
+// 开始读取流的钩子
+function onstream() {
+  streaming = true;
+}
+```
+
+首先所有的钩子都判断了done的状态，也就是只要有兜底的操作处理过了就不再重复处理了。`ondirectory`说明读取的是个文件夹则直接创建一个`EISDIR`类型的错误，`onerror`说明出错了则直接把错粗传给回调函数，`onend`说明正常读取结束没有错误直接调用回调。`onfile`和`onstream`就是打标记当前流的读取状态，是未读还是开始读了。
+
+```js
+// res响应结束（完成、关闭、出错）的钩子
+function onfinish(err) {
+  // 客户端意外断开连接
+  if (err && err.code === 'ECONNRESET') return onaborted();
+  // 流读取或响应出错
+  if (err) return onerror(err);
+  // 如果已处理过结束状态，则不再做处理
+  if (done) return;
+
+  // 如果res响应结束了，但是还没有处理过callback，说明可能响应出现了意外
+  setImmediate(function () {
+    // 如果此时流还不处理结束的状态，则说明是连接意外关闭了，则直接onaborted
+    if (streaming !== false && !done) {
+      onaborted();
+      return;
+    }
+
+    // 如果已经处理过了则不再继续处理
+    if (done) return;
+    done = true;
+    // 否则调用callback
+    callback();
+  });
+}
+
+// 请求终止
+function onaborted() {
+  if (done) return;
+  done = true;
+
+  // 创建一个请求终止的错误，ECONNABORTED一般表示对方意外关闭了套接字
+  var err = new Error('Request aborted');
+  err.code = 'ECONNABORTED';
+  // 调用callback并传入一个请求意外终止的错误
+  callback(err);
+}
+```
+
+我们重点看`onfinish`钩子的逻辑，也就是`res`响应结束（包括响应完成、关闭和出错）之后做了什么事情。
+
+首先能走到`onfinish`逻辑说明`res`响应已经结束了，但是结束有可能是出错了、也有可能是正常结束。因此判断意外断开连接的情况创建一个`ECONNRESET`错误并调用`callback`，出错的情况则是的调用`callback`并传递错误。如果没出错则判断有没有已经调用过`callback`的操作了，有的话不做任何处理，没有的话则判断流的状态进行一些处理。
+
+监听`res`响应结束逻辑是用的`on-finished`库，想了解该库的使用和实现原理的可以阅读我的这篇文章《[小而美的《on-finished》源码全解析](https://juejin.cn/post/7087741461990473735)》。
+
+
+### res.render()模板渲染原理
+
+利用`res.render()`可以渲染指定的视图，例如我们在访问`/`路由时返回`index.jade`的视图模板，使用代码如下：
+
+```js
+const express = require('express');
+const router = express.Router();
+
+const app = express();
+
+/**
+ * 设置视图引擎
+ */
+app.set('views', path.join(__dirname, 'views'));
+app.set('view engine', 'jade');
+
+/* GET home page. */
+router.get('/', function(req, res, next) {
+  // 返回src/views/index.jade模板
+  res.render('index', {
+    title: 'Express',
+  });
+});
+```
+
+下面看`res.render()`内部是如何实现的：
+
+```js
+// application.js中
+res.render = function render(view, options, callback) {
+  var app = this.req.app;
+  var done = callback;
+  var opts = options || {};
+  
+  // 省略参数处理部分...
+
+  // 响应后的callback
+  done = done || function (err, str) {
+    if (err) return req.next(err);
+    self.send(str);
+  };
+  
+  // 调用渲染方法
+  app.render(view, opts, done);
+}
+```
+
+可以看到`res.render()`渲染方法最终是调用的`app.render()`方法，并且传入指定的视图模板路径、选项参数和`done`的逻辑。下面看`app.render()`方法实现：
+
+```js
+/**
+ * 根据模板名称渲染对应的视图
+ * application.js文件
+ */
+app.render = function render(name, options, callback) {
+  var cache = this.cache;
+  var done = callback;
+  var engines = this.engines;
+  var opts = options;
+  var renderOptions = {};
+  var view;
+  
+  // 省略参数合并/处理代码...
+  
+  // 如果允许使用缓存则取缓存模板
+  if (renderOptions.cache) {
+    view = cache[name];
+  }
+  
+  // 实例化视图
+  if (!view) {
+    // 暂时省略实例化view的代码
+  }
+  
+  // 调用tryRender方法渲染
+  tryRender(view, renderOptions, done);
+}
+
+function tryRender(view, options, callback) {
+  try {
+    view.render(options, callback);
+  } catch (err) {
+    callback(err);
+  }
+}
+```
+
+这里可以看到主要就是判断要不要使用缓存的视图，然后根据需要实例化视图，调用视图实例的`render`方法进行渲染。接下来看是如何实例化视图的：
+
+```js
+// 上述代码的if部分
+if (!view) {
+  // 获取View类
+  var View = this.get('view');
+  // 实例化View类
+  view = new View(name, {
+    defaultEngine: this.get('view engine'),
+    root: this.get('views'),
+    engines: engines
+  });
+  
+  // 路径不存在则直接报错
+  if (!view.path) {
+    var err = new Error('...省略');
+    err.view = view;
+    return done(err);
+  }
+  
+  // 创建缓存
+  if (renderOptions.cache) {
+    cache[name] = view;
+  }
+}
+```
+
+这里就是获取`View`类，然后实例化，然后将实例添加到缓存中。`View`类的来源是在我们`express`初始化配置的时候通过`this.set('view', View)`添加的类，其实现在`lib/view.js`中：
+
+```js
+/**
+ * 根据name初始化一个视图
+ * @param {string} name
+ * @param {object} options
+ * * Options:
+ *   - `defaultEngine` 默认的模板引擎
+ *   - `engines` 所有加载的模板引擎
+ *   - `root` 视图模板的跟路径
+ * @public
+ */
+function View(name, options) {
+  var opts = options || {};
+
+  // 默认的模板引擎
+  this.defaultEngine = opts.defaultEngine;
+  // 文件的后缀名
+  this.ext = extname(name);
+  // 模板文件名称
+  this.name = name;
+  // 模板的根路径
+  this.root = opts.root;
+  
+  var fileName = name;
+
+  if (!this.ext) {
+    // 根据扩展视图引擎获取模板文件的后缀名
+    // 例如根据jade引擎获取的是.jade
+    this.ext = this.defaultEngine[0] !== '.'
+      ? '.' + this.defaultEngine
+      : this.defaultEngine;
+    // 完整的文件名，name.[ext]
+    fileName += this.ext;
+  }
+  
+  // ... 省略代码
+}
+```
+
+首先这里根据传入的视图文件名称，尝试获取其文件m名和后缀名，如果不存在后缀名则利用依赖的模板引擎尝试获取，比如指定的`jade`引擎，则对应获取`name.[ext]`文件名和后缀名。
+
+```js
+// 如果引擎还没有被加载，则调用require加载引擎
+if (!opts.engines[this.ext]) {
+  // 引擎名称
+  var mod = this.ext.substr(1)
+
+  // 加载对应的模板引擎
+  var fn = require(mod).__express
+
+  // 将模板引擎添加到engines缓存中
+  opts.engines[this.ext] = fn
+}
+
+// 存储当前加载的引擎
+this.engine = opts.engines[this.ext];
+
+// 查找路径对应的文件，用于判断资源是否存在
+this.path = this.lookup(fileName);
+```
+
+紧接着可以看到就是判断引擎有没有加载，没有加载则利用`require(引擎名)`加载模板引擎，加载后放在`opts.engines`缓存中，防止后续重复加载引擎。最后判断当前视图路径是否对应资源存在。
+
+而我们前面指定，渲染视图的逻辑是拿到`View`类的实例后调用的其`render`方法，那么我们看下`View`类实例的`render`方法逻辑：
+
+```js
+/**
+ * 调用渲染引擎
+ * @param {object} options
+ * @param {function} callback
+ * @private
+ */
+View.prototype.render = function render(options, callback) {
+  debug('render "%s"', this.path);
+  this.engine(this.path, options, callback);
+};
+```
+
+这里就比较简单了，其实就是调用的刚才加载的视图引擎。最后总结一下整体的渲染逻辑图如下所示：
+
+![image](https://note.youdao.com/yws/res/23703/EB937578A7464BFA9AE49C5EAE0678A0)
 
 ### res.attachment()附件下载原理
 
@@ -1812,3 +2187,112 @@ res.attachment = function attachment(filename) {
 
 可以看到内部就是通过`content-disposition`库实现的。那么为什么不直接自己拼接字符串呢？因为要考虑到大量的字符编码的问题。对`content-disposition`库源码实现有兴趣的话，可以查阅我的这篇博文[《详解Content-Disposition源码中Node附件下载服务原理》](https://juejin.cn/post/7077134813068525582)。
 
+# request相关API实现
+
+### req.get()实现
+
+```js
+/**
+ * 获取指定的请求头字段值
+ *
+ * - `Referrer`和`Referer`都是一样的，两者是可互相替换的
+ *
+ * @param {String} name
+ * @return {String}
+ * @public
+ */
+req.get =
+req.header = function header(name) {
+  // 省略参数校验部分...
+
+  var lc = name.toLowerCase();
+
+  switch (lc) {
+    case 'referer':
+    case 'referrer':
+      return this.headers.referrer
+        || this.headers.referer;
+    default:
+      return this.headers[lc];
+  }
+};
+```
+
+这块没什么好说的，就是直接从请求对象上的headers上获取指定字段和值，利用的Node的原生语法。
+
+### req.path()实现原理
+
+`req.path`可以获取`req`上的`url`的`pathname`部分，比如`/users?name=jack`获取到的是`/users`，其实现原理如下:
+
+```js
+var parse = require('parseurl');
+
+/**
+ * 从req上解析path路径
+ * @return {String}
+ * @public
+ */
+defineGetter(req, 'path', function path() {
+  return parse(this).pathname;
+});
+
+/**
+ * 在一个对象上创建getter属性的辅助函数
+ * @param {Object} obj
+ * @param {String} name
+ * @param {Function} getter
+ * @private
+ */
+function defineGetter(obj, name, getter) {
+  Object.defineProperty(obj, name, {
+    configurable: true,
+    enumerable: true,
+    get: getter
+  });
+}
+```
+
+这里首先创建了一个`defineGetter`辅助函数，用于快速在`req`对象上创建属性，且属性只能读取不能修改。`req.path`的实现就是利用的[parseurl](https://github.com/pillarjs/parseurl#readme)库解析得到的`pathname`，有兴趣的可以了解下其实现，源码不多。
+
+### req.fresh实现原理
+
+`req.fresh`用于判断响应资源是否还新鲜（还未过期），比如在`res.send()`内部实现中，就判断当前`res`是否还新鲜，如果还新鲜的话则直接响应`304`，接下来我们看`req.fresh`的内部实现：
+
+```js
+/**
+ * 检查请求是否还未过期，或者说叫做
+ * Last-Modified或ETag是否匹配
+ * @return {Boolean}
+ * @public
+ */
+defineGetter(req, 'fresh', function(){
+  var method = this.method;
+  var res = this.res
+  var status = res.statusCode
+
+  /**
+   * 只有GET和HEAD请求才存在未过期一说
+   */
+  if ('GET' !== method && 'HEAD' !== method) return false;
+
+  // 2xx or 304 as per rfc2616 14.26
+  if ((status >= 200 && status < 300) || 304 === status) {
+    return fresh(this.headers, {
+      'etag': res.get('ETag'),
+      'last-modified': res.get('Last-Modified')
+    })
+  }
+
+  return false;
+});
+```
+
+响应数据是否还新鲜，针对的是GET和HEAD类型的请求，所以首先判断了非GET和非HEAD的请求就直接false了。然后对应`[200, 300)、200`范围的状态码，调用[fresh](https://github.com/jshttp/fresh#readme)库进行判断是否还新鲜，有兴趣的可以了解了解。
+
+### req.query原理
+
+`req.query`的实现都在middleware/query.js文件中实现的，这部分在讲解中间件架构中已经详细的提到了，可以回过头去翻看。
+
+### req.body原理
+
+`req.body`也是一个很重要的api，用于获取解析`post`的数据，该部分的实现在调用的第三方中间件中实现，类似的api还有一些，暂时不过多结束，在后续的中间件原理分析中会讲解。
